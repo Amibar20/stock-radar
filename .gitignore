@@ -16,3 +16,4 @@ cache/
 *.log
 probe_results/
 out/
+.claude/

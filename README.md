@@ -93,3 +93,11 @@ for Israel). Below 30 completed ideas `too_few_to_conclude` is true and the UI s
 
 `--as-of YYYY-MM-DD` (only with `--dry-run`) re-runs the scanner as if on an earlier date, writing to `out/`, to test
 the tracker end to end. Simulated ideas are never published.
+
+## The app (docs/)
+Vanilla HTML/CSS/JS PWA served by GitHub Pages from `docs/` (no build step, no external CDN). Hebrew RTL, follows the
+system light/dark mode, safe-area aware for the iPhone home screen. Tabs: היום (banners, market briefs, top 5 US and
+top 3 Israel), ארה״ב / ישראל (searchable ranked lists, filters, stale markers), מעקב (starred stocks kept in this
+device's localStorage, plus the track record). `service-worker.js` is network-first for every file and falls back to
+the last cached copy offline. Icons are drawn by `scripts/make_icons.py` (Pillow, dev only).
+All paths are relative, so the site works at `https://<user>.github.io/stock-radar/`.
