@@ -116,8 +116,16 @@ def main() -> None:
     setup_logging()
     p = argparse.ArgumentParser()
     p.add_argument("--refresh-us", action="store_true")
+    p.add_argument("--if-older-than-days", type=int, default=0,
+                   help="only refresh when the committed file is at least this many days old")
     args = p.parse_args()
     if args.refresh_us:
+        current = read_json(US_FILE) or {}
+        updated = current.get("updated")
+        age = (dt.date.today() - dt.date.fromisoformat(updated)).days if updated else 10_000
+        if age < args.if_older_than_days:
+            log.info("US universe is %d days old; no refresh needed", age)
+            return
         refresh_us_universe()
 
 

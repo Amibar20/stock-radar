@@ -3,8 +3,7 @@
 Personal daily stock scanner (S&P 500 + Nasdaq-100, TASE TA-125) published as a Hebrew PWA on GitHub Pages.
 **Personal research tool, not investment advice.**
 
-Status: Stage 1 (skeleton, universes, provider probe). Full setup, scoring formulas and limits are documented as
-the stages land.
+Live site: https://amibar20.github.io/stock-radar/ (after the first run).
 
 ## Local setup (Windows)
 - Virtual env and secrets live outside OneDrive: `%USERPROFILE%\stock-radar-local\.venv` and `...\.env`
@@ -101,3 +100,30 @@ top 3 Israel), ארה״ב / ישראל (searchable ranked lists, filters, stale 
 device's localStorage, plus the track record). `service-worker.js` is network-first for every file and falls back to
 the last cached copy offline. Icons are drawn by `scripts/make_icons.py` (Pillow, dev only).
 All paths are relative, so the site works at `https://<user>.github.io/stock-radar/`.
+
+## Automation (.github/workflows)
+- `daily.yml` runs on a schedule (UTC): Israel 17:00 Mon-Thu and 13:00 Fri (after the TASE close in both summer and
+  winter time), US 22:30 Mon-Fri (after the NYSE close in both). It can also be run by hand (Actions -> Daily scan ->
+  Run workflow -> both / us / il). Steps: monthly US universe refresh, a one-call check that the benchmark has a new
+  final daily bar (holidays exit here), the scan, AI, track record, a bot commit of `docs/data` with `[skip ci]`, and a
+  Pages deployment. A concurrency group stops runs from overlapping.
+- `pages.yml` redeploys the site when `docs/` changes in a push.
+- The site is deployed with GitHub Actions (Pages source "GitHub Actions"), not "deploy from branch": bot commits
+  carry `[skip ci]`, which also suppresses the branch-based Pages build.
+- Run summary (Actions -> run -> Summary): symbols fetched, failures, credits used, LLM provider/tokens, top picks.
+
+## Setup (one time)
+1. Repository Settings -> Secrets and variables -> Actions -> New repository secret: `TWELVEDATA_API_KEY`,
+   `GEMINI_API_KEY` (and `ANTHROPIC_API_KEY` only if you switch providers; then add a repository *variable*
+   `LLM_PROVIDER=anthropic` plus `ANTHROPIC_MODEL=claude-haiku-5-5` for the cheap model; without it the
+   default is `claude-opus-5-5`). EODHD is not used: its free plan has no Tel Aviv data.
+2. Settings -> Pages -> Build and deployment -> Source: **GitHub Actions**.
+3. Push the code, then Actions -> Daily scan -> Run workflow -> `both`. The first run takes about 90 minutes
+   (Twelve Data allows 8 symbols a minute).
+4. iPhone: open the site in Safari -> Share -> Add to Home Screen.
+
+## Editing
+- Weights, thresholds, labels, number of picks: `config/scoring.json`.
+- Always-analysed tickers: `config/watchlist.json`, e.g. `["NVDA", "TEVA.TA"]` (US plain, Israel with `.TA`).
+- Israeli universe: `data/universe_il.json` (set `"enabled": false` to skip a stock).
+- Trading days: `config/calendar.json`.

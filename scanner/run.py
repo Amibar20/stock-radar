@@ -282,6 +282,31 @@ def summary_markdown(out: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def latest_benchmark_date(market: str, now_utc: dt.datetime) -> str | None:
+    """Date of the newest *final* benchmark bar, or None if it cannot be determined (then scan anyway)."""
+    cal = read_json(CONFIG_DIR / "calendar.json")[market]
+    try:
+        if market == "us":
+            from scanner.providers.twelvedata import TwelveDataClient
+
+            key = env("TWELVEDATA_API_KEY")
+            if not key:
+                return None
+            df = TwelveDataClient(key, min_interval=0).time_series("SPY", outputsize=5)
+        else:
+            from scanner.providers import yahoo
+
+            res = yahoo.fetch_many([load_il_universe()["benchmark"]["yahoo"]], period="1mo")
+            df = next(iter(res.bars.values()), None)
+        if df is None or df.empty:
+            return None
+        df = drop_partial_bar(df, cal, now_utc)
+        return df.index[-1].date().isoformat() if not df.empty else None
+    except Exception as exc:  # noqa: BLE001 - the guard is an optimisation only
+        log.warning("Benchmark pre-check failed (%s); running the full scan", exc)
+        return None
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--market", choices=["us", "il"], required=True)
@@ -299,6 +324,17 @@ def main(argv: list[str] | None = None) -> int:
     out_file = out_dir / f"{args.market}.json"
     previous = read_json(DOCS_DATA_DIR / f"{args.market}.json")
     now = dt.datetime.now(dt.UTC)
+
+    # Cheap holiday/weekend guard before the long fetch: one benchmark call (1 Twelve Data credit for US).
+    if not args.dry_run and previous and previous.get("as_of"):
+        latest = latest_benchmark_date(args.market, now)
+        if latest and latest <= previous["as_of"]:
+            msg = f"{args.market.upper()}: no new trading-day bar since {previous['as_of']} — nothing to do."
+            log.info(msg)
+            if os.environ.get("GITHUB_STEP_SUMMARY"):
+                with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+                    f.write(f"## {msg}\n")
+            return 0
 
     result, bars, bench_close = scan(args.market, args.limit, now, previous, args.as_of)
 
