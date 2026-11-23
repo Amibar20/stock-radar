@@ -1,0 +1,56 @@
+{
+  "_comment": "Transparent rule-based score, 0-100. Points are added per rule; penalties subtract; result is clipped to 0-100. Edit freely; see README 'Scoring'.",
+  "trend": {
+    "close_above_sma50": 10,
+    "sma50_above_sma200": 10,
+    "close_above_sma200": 5,
+    "sma50_rising_10d": 5
+  },
+  "momentum": {
+    "rsi_in_range": 10,
+    "rsi_low": 45,
+    "rsi_high": 70,
+    "macd_above_signal": 8,
+    "macd_hist_rising": 7
+  },
+  "volume": {
+    "strong_up_day": 15,
+    "strong_ratio": 1.3,
+    "mild_up_day": 5,
+    "mild_ratio": 1.0
+  },
+  "relative_strength": {
+    "max_points": 20,
+    "rs_zero_points_at": -0.05,
+    "rs_full_points_at": 0.10
+  },
+  "near_52w_high": {
+    "within_5pct": 10,
+    "within_10pct": 6,
+    "within_20pct": 3
+  },
+  "penalties": {
+    "rsi_overbought": 15,
+    "rsi_overbought_level": 78,
+    "extended_above_sma50": 15,
+    "extended_pct": 0.15
+  },
+  "gates": {
+    "min_bars": 200,
+    "min_avg_dollar_volume": {"USD": 20000000, "ILS": 3000000}
+  },
+  "levels": {
+    "entry_pullback_atr": 1.0,
+    "entry_below_sma20_atr": 0.5,
+    "stop_atr": 1.5,
+    "max_stop_below_swing_low_atr": 1.0,
+    "reward_risk": 2.0,
+    "max_stop_pct": 0.10,
+    "min_room_to_52w_high_r": 1.0
+  },
+  "labels": {
+    "research_buy": {"min_score": 70, "he": "בדיקה לקנייה"},
+    "watch": {"min_score": 50, "he": "מעקב"}
+  },
+  "selection": {"us_top": 12, "il_top": 6, "max_llm_candidates": 20}
+}

@@ -20,3 +20,37 @@ the stages land.
 - `data/universe_il.json`: TA-125 from the TASE website (TA-35 + TA-90), hand-editable. Set `"enabled": false`
   to skip a stock.
 - `config/watchlist.json`: tickers always analysed, e.g. `["AAPL", "TEVA.TA"]`.
+
+## Scoring (config/scoring.json)
+Every stock that passes the data-quality gates (>= 200 daily bars, 20-day average traded value >= $20M or
+>= ₪3M) gets points per rule; the total is clipped to 0-100 and every rule's points are published with the stock.
+
+| Group | Rule | Points |
+|---|---|---|
+| Trend | close > SMA50 / SMA50 > SMA200 / close > SMA200 / SMA50 higher than 10 days ago | 10 / 10 / 5 / 5 |
+| Momentum | RSI14 between 45 and 70 / MACD above signal / MACD histogram rising | 10 / 8 / 7 |
+| Volume | up day with volume >= 1.3x the prior 20-day average (or >= 1.0x for 5 points) | 15 |
+| Relative strength | 63-day return minus benchmark's (SPY for US, TA-125 for Israel): 0 at -5%, full at +10%, linear | 0-20 |
+| 52-week high | within 5% / 10% / 20% of the 52-week high | 10 / 6 / 3 |
+| Penalties | RSI14 > 78 / close more than 15% above SMA50 | -15 / -15 |
+
+Labels: score >= 70 "בדיקה לקנייה", 50-69 "מעקב", below 50 not shown.
+
+## Levels
+- **Entry zone**: upper = last close; lower = max(SMA20, close - 1 x ATR14) when SMA20 is below the close,
+  otherwise close - 0.5 x ATR14. The **entry reference** used for R math is the middle of the zone.
+- **Stop**: entry - 1.5 x ATR14, raised if needed so it is never more than 1 x ATR14 below the 10-day swing low.
+- **Target**: entry + 2 x (entry - stop), so reward:risk is exactly 2 by construction.
+- **Dropped ideas**: stop more than 10% below entry, or the prior 52-week high (excluding the last 10 bars) sits
+  between entry and entry + 1R while the close is still below it. A close at or above that prior high is a breakout
+  and is kept.
+- Today's bar is ignored until 45 minutes after the market close (providers return a live, partial bar).
+- Israeli prices arrive from Yahoo in agorot (ILA) and are divided by 100 to shekels; a symbol without currency metadata is
+  failed rather than guessed.
+
+## Limits (verified 2026-11-23)
+- Twelve Data free: 8 credits/min, 800/day. 518 US stocks + SPY + QQQ = 520 credits ≈ 66 minutes per run.
+  The run checks credits already used today and stops at 780.
+- EODHD free has no Tel Aviv exchange; Twelve Data needs the Pro plan for TASE. Israel therefore uses yfinance only
+  (works from GitHub runners: 119/125 symbols). If Yahoo fails for a symbol, its previous signals are kept and
+  marked stale; if more than 30% fail, the previous data is kept and the UI shows why.
