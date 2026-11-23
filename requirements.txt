@@ -7,3 +7,5 @@ lxml>=5.0
 jsonschema>=4.21
 truststore>=0.9
 tzdata>=2024.1
+google-genai>=1.0
+anthropic>=2.0

@@ -11,11 +11,12 @@ import datetime as dt
 import logging
 import os
 import sys
+import time
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from scanner import indicators, scoring
+from scanner import agents, indicators, scoring
 from scanner.config import (
     CONFIG_DIR,
     DOCS_DATA_DIR,
@@ -26,6 +27,7 @@ from scanner.config import (
     setup_logging,
     write_json,
 )
+from scanner.llm import make_client
 from scanner.providers import FetchResult
 from scanner.universe import load_il_universe, load_us_universe
 
@@ -198,9 +200,66 @@ def _round(ind: dict) -> dict:
     return {k: (round(v, 4) if isinstance(v, float) else v) for k, v in ind.items()}
 
 
+OTHER = {"us": "il", "il": "us"}
+BENCHMARK_NAME = {"us": "SPY", "il": "TA-125"}
+
+
+def add_ai(result: dict, use_llm: bool, other: dict | None) -> None:
+    """Attach the market brief and per-candidate AI analysis. Quantitative results never depend on it.
+
+    The free Gemini tier is often overloaded, so the whole AI step has a time budget (LLM_TIME_BUDGET seconds,
+    default 1200); anything not analysed in time is published with the 'no AI' note.
+    """
+    market = result["market"]
+    cfg = scoring.load_config()
+    client = make_client() if use_llm else None
+    regime = agents.risk_mode(market, result["benchmarks"])
+    deadline = time.monotonic() + float(env("LLM_TIME_BUDGET", "1200"))
+
+    def in_time() -> bool:
+        if client is not None and client.available and time.monotonic() > deadline:
+            client.usage.disabled_reason = "AI time budget reached"
+            log.warning("AI time budget reached; remaining candidates published without AI")
+        return client is not None and client.available
+
+    other_summary = None
+    if other and other.get("brief"):
+        other_summary = {"market": other["market"], "as_of": other.get("as_of"),
+                         "risk_mode": other["brief"].get("risk_mode"), "breadth": other["brief"].get("breadth")}
+    # Market brief first: it is the most important text of the day.
+    result["brief"] = agents.market_brief(client, market, result["benchmarks"], agents.breadth(result["stocks"]),
+                                          other_summary)
+
+    selected = [r for r in result["stocks"] if r.get("selected") and r.get("indicators")]
+    cap = cfg["selection"]["max_llm_candidates"]
+    no_ai = {"available": False, "note": agents.NO_AI_NOTE}
+    for i, row in enumerate(selected):
+        if i < cap and in_time():
+            row["ai"] = agents.analyze_candidate(client, row, market, regime, BENCHMARK_NAME[market])
+        else:
+            row["ai"] = dict(no_ai)
+    # One more pass for candidates hit by a transient error (free-tier 503s are common).
+    for row in selected[:cap]:
+        if not row["ai"].get("available") and in_time():
+            row["ai"] = agents.analyze_candidate(client, row, market, regime, BENCHMARK_NAME[market])
+
+    usage = client.usage.as_dict() if client else {"provider": None, "disabled_reason": "--no-llm or no key"}
+    usage["candidates_analyzed"] = sum(1 for r in selected if (r.get("ai") or {}).get("available"))
+    usage["candidates_selected"] = len(selected)
+    result["stats"]["llm"] = usage
+
+
 def summary_markdown(out: dict) -> str:
     st = out["stats"]
+    brief = out.get("brief") or {}
+    llm = st.get("llm") or {}
     lines = [f"## {out['market'].upper()} scan — data as of {out['as_of']}",
+             f"- market regime: {brief.get('risk_mode_he', '?')}"
+             + (" — CAUTION BANNER" if brief.get("caution_banner") else ""),
+             f"- LLM: {llm.get('provider')} {llm.get('model', '')} calls={llm.get('calls', 0)} "
+             f"failures={llm.get('failures', 0)} tokens in/out={llm.get('input_tokens', 0)}/"
+             f"{llm.get('output_tokens', 0)} analyzed={llm.get('candidates_analyzed', 0)}"
+             + (f" disabled: {llm['disabled_reason']}" if llm.get("disabled_reason") else ""),
              f"- symbols fetched: {st['fetched']}/{st['universe']} (failure ratio {st['failure_ratio']:.0%})",
              f"- failures: {', '.join(st['failed'][:30]) or 'none'}",
              f"- provider credits used: {st['credits_used']}"
@@ -234,11 +293,6 @@ def main(argv: list[str] | None = None) -> int:
     now = dt.datetime.now(dt.UTC)
 
     result = scan(args.market, args.limit, now, previous)
-    md = summary_markdown(result)
-    print(md)
-    if os.environ.get("GITHUB_STEP_SUMMARY"):
-        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
-            f.write(md)
 
     status_file = out_dir / "status.json"
     status = read_json(status_file, {}) or {}
@@ -253,6 +307,13 @@ def main(argv: list[str] | None = None) -> int:
         status[args.market] = {"ok": False, "checked_at": result["generated_at"], "message": msg}
         write_json(status_file, status)
         return 0
+
+    add_ai(result, use_llm=not args.no_llm, other=read_json(DOCS_DATA_DIR / f"{OTHER[args.market]}.json"))
+    md = summary_markdown(result)
+    print(md)
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+            f.write(md)
     write_json(out_file, result)
     status[args.market] = {"ok": True, "checked_at": result["generated_at"], "as_of": result["as_of"]}
     write_json(status_file, status)

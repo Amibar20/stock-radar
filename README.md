@@ -54,3 +54,21 @@ Labels: score >= 70 "בדיקה לקנייה", 50-69 "מעקב", below 50 not sh
 - EODHD free has no Tel Aviv exchange; Twelve Data needs the Pro plan for TASE. Israel therefore uses yfinance only
   (works from GitHub runners: 119/125 symbols). If Yahoo fails for a symbol, its previous signals are kept and
   marked stale; if more than 30% fail, the previous data is kept and the UI shows why.
+
+## AI agents (Stage 3)
+Only the selected candidates (top 12 US, top 6 Israel, plus the watchlist; at most 20 per run) are sent to the LLM,
+as small separate prompts that receive **only our computed, pre-rounded numbers**:
+1. **Technical analyst**: 2-3 Hebrew sentences interpreting the indicators.
+2. **Risk reviewer**: 1-2 Hebrew sentences with the bear case (always notes the earnings date is unknown).
+3. **Editor**: strict JSON `{ticker, verdict_he, summary_he, confidence, key_risks_he}` validated with a JSON schema
+   (extra keys such as prices are rejected), retried once. Entry/stop/target always come from the code.
+4. **Market brief**: one Hebrew paragraph per market from the benchmarks and breadth. The risk mode
+   (positive / cautious / negative) is rule-based: negative when every benchmark is below both SMA50 and SMA200
+   (US: SPY and QQQ; Israel: TA-125). A negative regime shows a caution banner and lowers each confidence one step.
+
+Provider: `LLM_PROVIDER=gemini` (default, free tier, `gemini-3.5-flash-lite` with `gemini-3.1-flash-lite` as
+fallback), `anthropic`, or `mock` (deterministic placeholder text, no cost). The free Gemini tier frequently answers
+503/504 under load: calls are retried with backoff, failed candidates get a second pass, the client stops after 4
+consecutive failures, and the whole AI step is capped at `LLM_TIME_BUDGET` seconds. Anything not analysed is
+published with "ללא ניתוח AI". Token usage is logged in the run summary and in `stats.llm`.
+`--no-llm` skips the AI step entirely.
