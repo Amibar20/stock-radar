@@ -1,0 +1,72 @@
+{
+  "updated": "2026-11-23T21:50:54Z",
+  "rules": {
+    "max_wait_bars": 5,
+    "max_hold_bars": 20,
+    "same_bar_stop_and_target": "stopped",
+    "benchmark": {
+      "us": "SPY",
+      "il": "TA-125"
+    }
+  },
+  "summary": {
+    "all": {
+      "ideas": 0,
+      "completed": 0,
+      "open": 0,
+      "pending": 0,
+      "not_triggered": 0,
+      "targets": 0,
+      "stops": 0,
+      "expired": 0,
+      "hit_rate": null,
+      "win_rate": null,
+      "avg_r": null,
+      "total_r": null,
+      "avg_pct": null,
+      "avg_bench_pct_same_period": null,
+      "avg_excess_vs_bench_pct": null,
+      "too_few_to_conclude": true,
+      "min_completed_for_conclusion": 30
+    },
+    "us": {
+      "ideas": 0,
+      "completed": 0,
+      "open": 0,
+      "pending": 0,
+      "not_triggered": 0,
+      "targets": 0,
+      "stops": 0,
+      "expired": 0,
+      "hit_rate": null,
+      "win_rate": null,
+      "avg_r": null,
+      "total_r": null,
+      "avg_pct": null,
+      "avg_bench_pct_same_period": null,
+      "avg_excess_vs_bench_pct": null,
+      "too_few_to_conclude": true,
+      "min_completed_for_conclusion": 30
+    },
+    "il": {
+      "ideas": 0,
+      "completed": 0,
+      "open": 0,
+      "pending": 0,
+      "not_triggered": 0,
+      "targets": 0,
+      "stops": 0,
+      "expired": 0,
+      "hit_rate": null,
+      "win_rate": null,
+      "avg_r": null,
+      "total_r": null,
+      "avg_pct": null,
+      "avg_bench_pct_same_period": null,
+      "avg_excess_vs_bench_pct": null,
+      "too_few_to_conclude": true,
+      "min_completed_for_conclusion": 30
+    }
+  },
+  "evaluations": []
+}
