@@ -1,0 +1,17 @@
+# secrets
+.env
+*.env
+!.env.example
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# local scratch / raw data (never publish raw OHLCV)
+cache/
+*.log
+probe_results/

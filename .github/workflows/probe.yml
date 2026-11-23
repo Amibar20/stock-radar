@@ -1,0 +1,38 @@
+# Stage 1 one-off check: does yfinance (Yahoo) work from a GitHub runner? No secrets needed.
+# Run manually: Actions -> "Probe data providers" -> Run workflow. Safe to delete after Stage 1.
+name: Probe data providers
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Probe yfinance (all TA-125 stocks)
+        run: python scripts/probe_providers.py --only yfinance
+      - name: Summary
+        if: always()
+        run: |
+          python - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import json, pathlib
+          p = pathlib.Path("probe_results/probe.json")
+          if not p.exists():
+              print("probe.json missing"); raise SystemExit
+          d = json.loads(p.read_text(encoding="utf-8"))
+          y = d.get("yfinance", {})
+          print("## Provider probe from GitHub runner")
+          print(f"- yfinance: ok={y.get('ok')} symbols_ok={y.get('ok_count')}/{y.get('requested')} "
+                f"failed={len(y.get('failed', []))} error={y.get('error')}")
+          print(f"- yfinance sample: `{json.dumps(y.get('sample'), ensure_ascii=False)}`")
+          EOF
