@@ -72,3 +72,24 @@ fallback), `anthropic`, or `mock` (deterministic placeholder text, no cost). The
 consecutive failures, and the whole AI step is capped at `LLM_TIME_BUDGET` seconds. Anything not analysed is
 published with "ללא ניתוח AI". Token usage is logged in the run summary and in `stats.llm`.
 `--no-llm` skips the AI step entirely.
+
+## Track record (Stage 4)
+Each published run appends its labelled picks to `docs/data/history/<data date>.json` (one file per date, both
+markets) and re-evaluates every open idea of that market with the fresh bars into `docs/data/track_record.json`.
+
+| Status | Rule |
+|---|---|
+| pending | waiting for the price to touch the entry (middle of the zone), up to 5 trading days |
+| not_triggered | never touched the entry within 5 trading days; excluded from the statistics |
+| open | entered; marked to market at the last close |
+| target | high reached the target (exit at the target) |
+| stopped | low reached the stop (exit at the stop, or at the open on a gap down). A bar that touches both counts as stopped; on the fill bar only the stop is checked |
+| expired | 20 trading days after the fill, exit at that day's close |
+
+R multiple = (exit - entry) / (entry - stop); entry is filled at the entry price, or at the open if the bar opens
+below it. The summary (overall / US / Israel) reports hit rate (targets / completed), win rate (R > 0), average and
+total R, average % move, and the benchmark's average % move over the same fill-to-exit dates (SPY for US, TA-125
+for Israel). Below 30 completed ideas `too_few_to_conclude` is true and the UI says so.
+
+`--as-of YYYY-MM-DD` (only with `--dry-run`) re-runs the scanner as if on an earlier date, writing to `out/`, to test
+the tracker end to end. Simulated ideas are never published.

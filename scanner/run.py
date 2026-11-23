@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from scanner import agents, indicators, scoring
+from scanner import agents, indicators, scoring, tracker
 from scanner.config import (
     CONFIG_DIR,
     DOCS_DATA_DIR,
@@ -108,7 +108,8 @@ def fetch(market: str, symbols: list[str]) -> FetchResult:
 
 
 # ---------------------------------------------------------------- main scan
-def scan(market: str, limit: int | None, now_utc: dt.datetime, previous: dict | None) -> dict:
+def scan(market: str, limit: int | None, now_utc: dt.datetime, previous: dict | None,
+         as_of_override: str | None = None) -> tuple[dict, dict[str, pd.DataFrame], pd.Series | None]:
     cfg = scoring.load_config()
     cal = read_json(CONFIG_DIR / "calendar.json")[market]
     watchlist = read_json(CONFIG_DIR / "watchlist.json", [])
@@ -117,6 +118,9 @@ def scan(market: str, limit: int | None, now_utc: dt.datetime, previous: dict | 
 
     res = fetch(market, benchmarks + [s["fetch"] for s in stocks])
     bars = {k: drop_partial_bar(v, cal, now_utc) for k, v in res.bars.items()}
+    if as_of_override:  # testing only: pretend the scan ran on an earlier date
+        cutoff = pd.Timestamp(as_of_override)
+        bars = {k: v[v.index <= cutoff] for k, v in bars.items()}
 
     bench_close = bars[benchmarks[0]]["close"] if benchmarks[0] in bars else None
     bench_snap = {b: market_snapshot(bars[b]) for b in benchmarks if b in bars and len(bars[b]) >= 200}
@@ -171,7 +175,7 @@ def scan(market: str, limit: int | None, now_utc: dt.datetime, previous: dict | 
 
     as_of = max((r["date"] for r in rows if r.get("date") and not r.get("stale_since")), default=None)
     fetched = len([s for s in stocks if s["fetch"] in res.bars])
-    return {
+    result = {
         "market": market,
         "currency": currency,
         "generated_at": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -189,6 +193,7 @@ def scan(market: str, limit: int | None, now_utc: dt.datetime, previous: dict | 
         },
         "stocks": sorted(rows, key=lambda r: (r.get("rank") or 10_000, r["symbol"])),
     }
+    return result, bars, bench_close
 
 
 def _ident(s: dict) -> dict:
@@ -282,8 +287,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--market", choices=["us", "il"], required=True)
     ap.add_argument("--limit", type=int, default=None, help="scan only N symbols (testing)")
     ap.add_argument("--dry-run", action="store_true", help="write to out/ instead of docs/data")
-    ap.add_argument("--no-llm", action="store_true", help="skip the AI agents (Stage 3)")
+    ap.add_argument("--no-llm", action="store_true", help="skip the AI agents")
+    ap.add_argument("--as-of", default=None, help="testing only (requires --dry-run): scan as if on this date")
     args = ap.parse_args(argv)
+    if args.as_of and not args.dry_run:
+        ap.error("--as-of is for simulations and requires --dry-run")
 
     load_env()
     setup_logging()
@@ -292,7 +300,7 @@ def main(argv: list[str] | None = None) -> int:
     previous = read_json(DOCS_DATA_DIR / f"{args.market}.json")
     now = dt.datetime.now(dt.UTC)
 
-    result = scan(args.market, args.limit, now, previous)
+    result, bars, bench_close = scan(args.market, args.limit, now, previous, args.as_of)
 
     status_file = out_dir / "status.json"
     status = read_json(status_file, {}) or {}
@@ -314,6 +322,14 @@ def main(argv: list[str] | None = None) -> int:
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
             f.write(md)
+    # Track record: evaluate past ideas with today's bars, then record today's picks.
+    history_dir = out_dir / "history"
+    track = tracker.update_track_record(args.market, bars, bench_close, history_dir, out_dir / "track_record.json",
+                                        result["generated_at"])
+    tracker.record_picks(result, history_dir)
+    s_all = track["summary"][args.market]
+    log.info("Track record %s: %d ideas, %d completed, avg R %s", args.market, s_all["ideas"], s_all["completed"],
+             s_all["avg_r"])
     write_json(out_file, result)
     status[args.market] = {"ok": True, "checked_at": result["generated_at"], "as_of": result["as_of"]}
     write_json(status_file, status)
