@@ -51,9 +51,11 @@ jobs:
       - name: Pick market
         id: pick
         run: |
+          # The US runs also scan Israel first: if the Israel run was missed (GitHub skips scheduled runs now
+          # and then), this fills it in; if Israel is already up to date it exits in seconds.
           case "${{ github.event_name }}:${{ github.event.schedule }}" in
             workflow_dispatch:*)          m="${{ inputs.market }}" ;;
-            *:"37 22 * * 1-5"|*:"13 3 * * 2-6") m="us" ;;
+            *:"37 22 * * 1-5"|*:"13 3 * * 2-6") m="both" ;;
             *)                            m="il" ;;
           esac
           if [ "$m" = "both" ]; then echo "markets=il us" >> "$GITHUB_OUTPUT"; else echo "markets=$m" >> "$GITHUB_OUTPUT"; fi
@@ -100,8 +102,8 @@ jobs:
           done
           exit 1
 
-  # Deploy only when new data was pushed. GitHub's Pages service fails now and then for a moment
-  # ("No artifacts named github-pages were found"), so a failed deploy is retried once.
+  # Deploy only when new data was pushed. GitHub needs a moment to register the uploaded artifact: deploying in
+  # the same second fails with "No artifacts named github-pages were found". Wait first, and retry once.
   deploy:
     needs: scan
     if: ${{ !cancelled() && needs.scan.outputs.changed == 'true' }}
@@ -117,6 +119,7 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: docs
+      - run: sleep 20
       - id: deploy1
         uses: actions/deploy-pages@v5
         continue-on-error: true
