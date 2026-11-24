@@ -3,12 +3,18 @@ name: Daily scan
 
 on:
   schedule:
-    # Israel (TASE). Mon-Thu close ~17:30 Israel time = 15:30 UTC (winter) / 14:30 UTC (summer) -> 17:00 UTC
-    - cron: "0 17 * * 1-4"
-    # Israel Friday close ~13:50 Israel time = 11:50 / 10:50 UTC -> 13:00 UTC
-    - cron: "0 13 * * 5"
-    # US. Close 16:00 New York = 21:00 UTC (winter) / 20:00 UTC (summer) -> 22:30 UTC covers both
-    - cron: "30 22 * * 1-5"
+    # GitHub may start scheduled runs hours late or drop them, especially on the hour, so each market has
+    # an off-the-hour main run plus a backup run. A run that finds no new trading day exits in seconds
+    # (1 Twelve Data credit for US), so the backup costs nothing when the main run already worked.
+    # Israel (TASE). Mon-Thu close ~17:30 Israel time = 15:30 UTC (winter) / 14:30 UTC (summer).
+    - cron: "23 17 * * 1-4"
+    - cron: "47 19 * * 1-4"
+    # Israel Friday close ~13:50 Israel time = 11:50 / 10:50 UTC.
+    - cron: "23 13 * * 5"
+    - cron: "47 15 * * 5"
+    # US. Close 16:00 New York = 21:00 UTC (winter) / 20:00 UTC (summer). Backup early next UTC morning.
+    - cron: "37 22 * * 1-5"
+    - cron: "13 3 * * 2-6"
   workflow_dispatch:
     inputs:
       market:
@@ -30,6 +36,8 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     timeout-minutes: 150
+    outputs:
+      changed: ${{ steps.commit.outputs.changed }}
     steps:
       - uses: actions/checkout@v7
 
@@ -43,13 +51,11 @@ jobs:
       - name: Pick market
         id: pick
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            m="${{ inputs.market }}"
-          elif [ "${{ github.event.schedule }}" = "30 22 * * 1-5" ]; then
-            m="us"
-          else
-            m="il"
-          fi
+          case "${{ github.event_name }}:${{ github.event.schedule }}" in
+            workflow_dispatch:*)          m="${{ inputs.market }}" ;;
+            *:"37 22 * * 1-5"|*:"13 3 * * 2-6") m="us" ;;
+            *)                            m="il" ;;
+          esac
           if [ "$m" = "both" ]; then echo "markets=il us" >> "$GITHUB_OUTPUT"; else echo "markets=$m" >> "$GITHUB_OUTPUT"; fi
 
       - name: Refresh US universe (monthly)
@@ -73,6 +79,7 @@ jobs:
           exit $rc
 
       - name: Commit data
+        id: commit
         if: always()
         run: |
           git config user.name "github-actions[bot]"
@@ -85,18 +92,23 @@ jobs:
           fi
           git commit -m "data: ${{ steps.pick.outputs.markets }} $(date -u +%Y-%m-%d) [skip ci]"
           for i in 1 2 3; do
-            git pull --rebase origin main && git push origin HEAD:main && exit 0
+            if git pull --rebase origin main && git push origin HEAD:main; then
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             sleep 10
           done
           exit 1
 
+  # Deploy only when new data was pushed. GitHub's Pages service fails now and then for a moment
+  # ("No artifacts named github-pages were found"), so a failed deploy is retried once.
   deploy:
     needs: scan
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.scan.outputs.changed == 'true' }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deploy2.outputs.page_url || steps.deploy1.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -105,5 +117,11 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: docs
-      - id: deployment
+      - id: deploy1
+        uses: actions/deploy-pages@v5
+        continue-on-error: true
+      - if: steps.deploy1.outcome == 'failure'
+        run: sleep 60
+      - id: deploy2
+        if: steps.deploy1.outcome == 'failure'
         uses: actions/deploy-pages@v5

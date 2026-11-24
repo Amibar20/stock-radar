@@ -102,11 +102,14 @@ the last cached copy offline. Icons are drawn by `scripts/make_icons.py` (Pillow
 All paths are relative, so the site works at `https://<user>.github.io/stock-radar/`.
 
 ## Automation (.github/workflows)
-- `daily.yml` runs on a schedule (UTC): Israel 17:00 Mon-Thu and 13:00 Fri (after the TASE close in both summer and
-  winter time), US 22:30 Mon-Fri (after the NYSE close in both). It can also be run by hand (Actions -> Daily scan ->
-  Run workflow -> both / us / il). Steps: monthly US universe refresh, a one-call check that the benchmark has a new
-  final daily bar (holidays exit here), the scan, AI, track record, a bot commit of `docs/data` with `[skip ci]`, and a
-  Pages deployment. A concurrency group stops runs from overlapping.
+- `daily.yml` runs on a schedule (UTC): Israel 17:23 Mon-Thu and 13:23 Fri (after the TASE close in both summer and
+  winter time), US 22:37 Mon-Fri (after the NYSE close in both). GitHub can start scheduled runs hours late or drop
+  them, so each market also has a backup run (Israel 19:47 / Fri 15:47, US 03:13 the next UTC morning); when the main
+  run already worked, the backup finds no new bar and exits in seconds. It can also be run by hand (Actions -> Daily
+  scan -> Run workflow -> both / us / il). Steps: monthly US universe refresh, a one-call check that the benchmark has
+  a new final daily bar (holidays exit here), the scan, AI, track record, a bot commit of `docs/data` with
+  `[skip ci]`, and a Pages deployment (only when new data was pushed; retried once, since Pages fails briefly now and
+  then). A concurrency group stops runs from overlapping.
 - `pages.yml` redeploys the site when `docs/` changes in a push.
 - The site is deployed with GitHub Actions (Pages source "GitHub Actions"), not "deploy from branch": bot commits
   carry `[skip ci]`, which also suppresses the branch-based Pages build.
