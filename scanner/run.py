@@ -164,6 +164,8 @@ def scan(market: str, limit: int | None, now_utc: dt.datetime, previous: dict | 
         row["_closes"] = df["close"].iloc[-SPARKLINE_BARS:]
         rows.append(row)
 
+    add_fundamentals(market, rows, prev_by_symbol, currency)
+
     ranked = sorted((r for r in rows if r.get("score") is not None and not r.get("stale_since")),
                     key=lambda r: r["score"], reverse=True)
     for i, r in enumerate(ranked, 1):
@@ -202,6 +204,32 @@ def scan(market: str, limit: int | None, now_utc: dt.datetime, previous: dict | 
         "stocks": sorted(rows, key=lambda r: (r.get("rank") or 10_000, r["symbol"])),
     }
     return result, bars, bench_close
+
+
+def _yahoo_symbol(market: str, row: dict) -> str:
+    return row.get("fetch", row["symbol"]) if market == "il" else row["symbol"].replace(".", "-")  # BRK.B -> BRK-B
+
+
+def add_fundamentals(market: str, rows: list[dict], prev_by_symbol: dict, currency: str) -> None:
+    """Attach P/E and market cap from Yahoo (free, one request per 100 symbols). Display only: never scored.
+
+    If Yahoo fails, the previous day's values are kept (with their date), since earnings change quarterly.
+    """
+    from scanner.providers import yahoo
+
+    want = {_yahoo_symbol(market, r): r["indicators"]["close"] for r in rows
+            if r.get("indicators") and not r.get("stale_since")}
+    try:
+        got = yahoo.fundamentals(want, currency)
+    except Exception as exc:  # noqa: BLE001 - optional data must not fail the scan
+        log.warning("Fundamentals unavailable today (%s); keeping previous values", exc)
+        got = {}
+    for r in rows:
+        f = got.get(_yahoo_symbol(market, r))
+        if f:
+            r["fundamentals"] = {**f, "date": r.get("date")}
+        elif (prev := prev_by_symbol.get(r["symbol"], {}).get("fundamentals")) and not r.get("fundamentals"):
+            r["fundamentals"] = prev
 
 
 def _close(v: float) -> float:

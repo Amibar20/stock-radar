@@ -115,6 +115,13 @@ All paths are relative, so the site works at `https://<user>.github.io/stock-rad
   stock plus the benchmark and display indices, used by the app's charts (loaded after the first paint). Display
   indices (`DISPLAY_INDICES` in `scanner/run.py`: DIA and IWM for the US, TA35.TA for Israel) appear under
   `indices` and are never used for the market regime, relative strength or the track record.
+- Each scan also attaches `fundamentals` (trailing P/E, forward P/E for US stocks, market cap) from Yahoo's batch
+  quote endpoint (free, one request per 100 symbols). Display only, never scored; if Yahoo fails, the previous
+  values are kept with their date. Yahoo's trailing EPS for `.TA` symbols is already in shekels (checked against
+  the US listings of TEVA/ESLT/NICE/ICL), while its forward EPS for `.TA` is inconsistent, so Israel shows
+  trailing P/E only.
+- The app's "virtual portfolio" (Performance tab) lives only in the browser's localStorage: starring a stock
+  records the latest close (and the idea's target/stop, if it was a pick); unstarring closes it at the latest close.
 - `pages.yml` redeploys the site when `docs/` changes in a push.
 - The site is deployed with GitHub Actions (Pages source "GitHub Actions"), not "deploy from branch": bot commits
   carry `[skip ci]`, which also suppresses the branch-based Pages build.

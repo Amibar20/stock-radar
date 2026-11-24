@@ -7,7 +7,7 @@ const SCREENS = ["home", "markets", "watch", "perf", "settings"];
 const STATE = {
   us: null, il: null, status: null, track: null, hist: { us: null, il: null }, loaded: false,
   screen: "home", market: "us", hero: { us: null, il: null }, range: "6m", detailRange: "6m",
-  movers: "gainers", query: "", filter: "ideas", sort: "score", watchSort: "change", detail: null, sheet: null,
+  movers: "gainers", perfTab: "mine", query: "", filter: "ideas", sort: "score", watchSort: "change", detail: null, sheet: null,
 };
 
 const LABEL_HE = { research_buy: "בדיקה לקנייה", watch: "מעקב" };
@@ -25,9 +25,10 @@ const INDEX_META = {
   "^TA125.TA": { he: "ת״א-125", sub: "נקודות מדד", unit: "" },
   "TA35.TA": { he: "ת״א-35", sub: "נקודות מדד", unit: "" },
 };
-const RANGES = [["1w", "שבוע", 5], ["1m", "חודש", 21], ["3m", "3 ח׳", 63], ["6m", "6 ח׳", 126], ["1y", "שנה", 252]];
-const RANGE_LONG = { "1w": "בשבוע", "1m": "בחודש", "3m": "ב-3 חודשים", "6m": "ב-6 חודשים", "1y": "בשנה" };
-const SORTS = { score: "ציון", change: "שינוי יומי", price: "מחיר", turnover: "מחזור כספי", symbol: "סימול" };
+const RANGES = [["1w", "1W", 5], ["1m", "1M", 21], ["3m", "3M", 63], ["6m", "6M", 126], ["ytd", "YTD", 0], ["1y", "1Y", 252]];
+const RANGE_LONG = { "1w": "בשבוע", "1m": "בחודש", "3m": "ב-3 חודשים", "6m": "ב-6 חודשים", ytd: "מתחילת השנה", "1y": "בשנה" };
+const SORTS = { score: "ציון", change: "שינוי יומי", price: "מחיר", turnover: "מחזור כספי", mcap: "שווי שוק", pe: "מכפיל רווח", symbol: "סימול" };
+const BENCH_KEY = { us: "SPY", il: "^TA125.TA" };
 /* Regular trading hours (local minutes). Holidays are not known here, so the status says "regular hours". */
 const SESSIONS = {
   us: { tz: "America/New_York", open: 570, close: 960, days: { Mon: 1, Tue: 1, Wed: 1, Thu: 1, Fri: 1 } },
@@ -85,8 +86,76 @@ function starred() { return new Set(store.get("starred", [])); }
 function isStarred(market, sym) { return starred().has(starKey(market, sym)); }
 function toggleStar(market, sym) {
   const s = starred(); const k = starKey(market, sym);
-  s.has(k) ? s.delete(k) : s.add(k);
+  if (s.has(k)) { s.delete(k); closePosition(market, sym); } else { s.add(k); openPosition(market, sym); }
   store.set("starred", [...s]);
+}
+
+/* ---------------------------------------------------------------- virtual portfolio (this device only)
+   Starring a stock "buys" it virtually at the latest close in the data, together with the idea's target and stop
+   when it was a recommendation that day. Removing the star "sells" it at the latest close. Nothing is real money. */
+function positions() { return store.get("positions", {}); }
+function closedPositions() { return store.get("closed", []); }
+function findRow(market, sym) { return STATE[market]?.stocks.find((r) => r.symbol === sym) || null; }
+
+function openPosition(market, sym) {
+  const row = findRow(market, sym);
+  const pos = positions(); const k = starKey(market, sym);
+  if (pos[k] || !isNum(row?.indicators?.close)) return;
+  const lv = row.levels || null;
+  pos[k] = {
+    market, symbol: sym, name: row.name_he || row.name || "", currency: row.currency || (market === "il" ? "ILS" : "USD"),
+    since: row.date || STATE[market].as_of, price: row.indicators.close,
+    entryLow: lv?.entry_low ?? null, target: lv?.target ?? null, stop: lv?.stop ?? null,
+    label: row.label?.key ?? null, score: isNum(row.score) ? Math.round(row.score) : null, idea: !!(row.selected && lv),
+  };
+  store.set("positions", pos);
+}
+function closePosition(market, sym) {
+  const pos = positions(); const k = starKey(market, sym); const p = pos[k];
+  if (!p) return;
+  const row = findRow(market, sym);
+  // Removing a star on the same data day is treated as a mistake, not a trade.
+  if (isNum(row?.indicators?.close) && row.date && row.date !== p.since) {
+    const closed = closedPositions();
+    closed.unshift({ ...p, exitDate: row.date, exitPrice: row.indicators.close });
+    store.set("closed", closed.slice(0, 200));
+  }
+  delete pos[k];
+  store.set("positions", pos);
+}
+/* Stars made before the portfolio existed get a position at today's close (once). */
+function syncPositions() {
+  const pos = positions(); const s = starred();
+  for (const k of s) if (!pos[k]) { const [m, ...rest] = k.split(":"); openPosition(m, rest.join(":")); }
+  const now = positions(); let changed = false;
+  for (const k of Object.keys(now)) if (!s.has(k)) { delete now[k]; changed = true; }
+  if (changed) store.set("positions", now);
+}
+
+function sinceIndex(series, date) { return series ? series.dates.findIndex((d) => d >= date) : -1; }
+function benchSince(market, date) {
+  const b = histSeries(market, BENCH_KEY[market]);
+  const i = sinceIndex(b, date);
+  return i >= 0 ? b.values[b.values.length - 1] / b.values[i] - 1 : null;
+}
+function posMetrics(p) {
+  const row = findRow(p.market, p.symbol);
+  const curPx = row?.indicators?.close;
+  const ret = isNum(curPx) ? curPx / p.price - 1 : null;
+  const tgtPct = isNum(p.target) ? p.target / p.price - 1 : null;
+  const stopPct = isNum(p.stop) ? p.stop / p.price - 1 : null;
+  const progress = isNum(ret) && isNum(tgtPct) && tgtPct > 0 ? ret / tgtPct : null;
+  const s = histSeries(p.market, p.symbol);
+  const i = sinceIndex(s, p.since);
+  const path = i >= 0 ? s.values.slice(i) : null;
+  const hi = path ? Math.max(...path) : curPx, lo = path ? Math.min(...path) : curPx;
+  const days = Math.max(0, Math.round((Date.parse(row?.date || p.since) - Date.parse(p.since)) / 864e5));
+  return {
+    row, curPx, ret, tgtPct, stopPct, progress, path: path && path.length > 1 ? path : null, days,
+    best: isNum(hi) ? hi / p.price - 1 : null, worst: isNum(lo) ? lo / p.price - 1 : null,
+    hitTarget: isNum(p.target) && isNum(hi) && hi >= p.target, hitStop: isNum(p.stop) && isNum(lo) && lo <= p.stop,
+    bench: benchSince(p.market, p.since),
+  };
 }
 
 async function loadJSON(name, tries = 2) {
@@ -116,8 +185,28 @@ function histSeries(market, key) {
   return out.values.length > 1 ? out : null;
 }
 function sliceRange(series, key) {
-  const n = (RANGES.find((r) => r[0] === key) || RANGES[3])[2] + 1;
-  return { values: series.values.slice(-n), dates: series.dates ? series.dates.slice(-n) : null };
+  const r = RANGES.find((x) => x[0] === key) || RANGES[3];
+  let start;
+  if (r[0] === "ytd" && series.dates) {
+    const year = series.dates[series.dates.length - 1].slice(0, 4);
+    const first = series.dates.findIndex((d) => d.slice(0, 4) === year);
+    start = Math.max(0, first - 1); // the last close of the previous year is the base, as in any YTD figure
+  } else {
+    start = Math.max(0, series.values.length - r[2] - 1);
+  }
+  return { values: series.values.slice(start), dates: series.dates ? series.dates.slice(start) : null };
+}
+function rangeReturn(series, key) {
+  const s = sliceRange(series, key);
+  return s.values.length > 1 ? s.values[s.values.length - 1] / s.values[0] - 1 : null;
+}
+/* Period tabs that also show each period's return (selecting one redraws the chart). */
+function rangeTabs(series, segName, current) {
+  return `<div class="ranges" role="group">${RANGES.map(([k, t]) => {
+    const v = rangeReturn(series, k);
+    return `<button class="${k === current ? "on" : ""}" data-action="seg" data-seg="${segName}" data-val="${k}" aria-pressed="${k === current}">
+      <span>${t}</span><b class="${tone(v)}">${isNum(v) ? fmtPct(v, 1) : "—"}</b></button>`;
+  }).join("")}</div>`;
 }
 function sparkValues(row, market) {
   if (Array.isArray(row.sparkline) && row.sparkline.length > 1) return row.sparkline;
@@ -253,14 +342,14 @@ function ideaCard(row, market) {
   </article>`;
 }
 
-function listRow(row, market, { rank = false, star = true } = {}) {
+function listRow(row, market, { rank = false, star = true, sub = "" } = {}) {
   const i = row.indicators || {};
   const stale = row.stale_since ? ` · <span class="chg down">לא עודכן מאז ${fmtDate(row.stale_since)}</span>` : "";
   return `<div class="row" data-action="detail" data-market="${market}" data-symbol="${esc(row.symbol)}" role="button" tabindex="0">
     ${rank ? `<span class="rank">${row.rank ? ltr(row.rank) : ""}</span>` : ""}
     <div class="ident">
       <div class="ticker"><span class="ltr">${esc(row.symbol)}</span>${row.label ? ` <span class="chip mini ${esc(row.label.key)}">${esc(LABEL_HE[row.label.key])}</span>` : ""}</div>
-      <div class="name">${esc(row.name_he || row.name || "")}${stale}</div>
+      <div class="name">${esc(row.name_he || row.name || "")}${stale}</div>${sub}
     </div>
     ${sparkSvg(sparkValues(row, market), "spark row-spark")}
     <div class="price"><div class="last">${fmtPrice(i.close, cur(row))}</div>${changeHtml(i.change_pct)}</div>
@@ -348,7 +437,7 @@ function heroCard() {
       <div class="hero-sub">${changeHtml(snap.change_pct)} <span class="muted">היום</span>
         ${isNum(rangeChg) ? `<span class="dot-sep"></span>${changeHtml(rangeChg, 1)} <span class="muted">${RANGE_LONG[STATE.range]}</span>` : ""}</div>
     </div>
-    ${sliced ? chartHtml(sliced, meta.unit, 190) + segmented("range", RANGES.map((r) => [r[0], r[1]]), STATE.range, "full")
+    ${sliced ? chartHtml(sliced, meta.unit, 190) + rangeTabs(series, "range", STATE.range)
       : `<p class="note">גרף היסטורי של המדד יופיע אחרי העדכון הלילי הבא.</p>`}
     ${smaLine(snap)}
     ${briefText(data)}
@@ -423,6 +512,8 @@ function rankRows(m) {
     change: (r) => (isNum(r.indicators?.change_pct) ? r.indicators.change_pct : -1e9),
     price: (r) => (isNum(r.indicators?.close) ? r.indicators.close : -1e9),
     turnover: (r) => (r.indicators?.volume || 0) * (r.indicators?.close || 0),
+    mcap: (r) => (isNum(r.fundamentals?.mcap) ? r.fundamentals.mcap : -1e18),
+    pe: (r) => (isNum(r.fundamentals?.pe) ? -r.fundamentals.pe : -1e18), // lowest P/E first, no P/E last
   }[STATE.sort];
   rows = STATE.sort === "symbol" ? [...rows].sort((a, b) => a.symbol.localeCompare(b.symbol))
     : [...rows].sort((a, b) => val(b) - val(a));
@@ -455,12 +546,19 @@ function renderMarkets() {
     ${indexTiles(m, data)}
     <div class="cols">${breadthBlock(data)}${moversBlock(m, data)}</div>
     ${top.length ? `${sectionTitle("הנבחרות להיום")}<div class="grid">${top.map((r) => ideaCard(r, m)).join("")}</div>` : ""}
-    ${sectionTitle("דירוג מלא", sortSelect("sort", STATE.sort, ["score", "change", "price", "turnover", "symbol"]))}
+    ${sectionTitle("דירוג מלא", sortSelect("sort", STATE.sort, ["score", "change", "mcap", "pe", "price", "turnover", "symbol"]))}
     <input class="search" type="search" inputmode="search" placeholder="חיפוש לפי סימול או שם" value="${esc(STATE.query)}" data-input="rank" aria-label="חיפוש בדירוג">
     ${segmented("filter", [["ideas", "רעיונות"], ["scored", "כל המדורגות"], ["all", "הכול"]], STATE.filter)}
     <div class="count" id="rank-count"></div>
     <div class="glass flush rows" id="rank-list"></div>`;
   renderRankList();
+}
+
+function sinceLine(market, sym) {
+  const p = positions()[starKey(market, sym)];
+  if (!p) return "";
+  const m = posMetrics(p);
+  return `<div class="since">מאז ${fmtDate(p.since)}: <b class="${tone(m.ret)}">${fmtPct(m.ret, 1)}</b>${isNum(m.tgtPct) ? ` · יעד ${fmtPct(m.tgtPct, 1)}` : ""}</div>`;
 }
 
 function renderWatch() {
@@ -479,7 +577,7 @@ function renderWatch() {
     <div class="screen-head"><h2 class="large-title">הרשימה שלי</h2>
       <button class="btn" data-action="search"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>הוספת מניה</button></div>
     ${mine.length ? `<div class="list-tools"><span class="count">${ltr(mine.length)} מניות</span>${sortSelect("watchSort", STATE.watchSort, ["change", "score", "price", "symbol"])}</div>
-      <div class="glass flush rows">${mine.map(([r, m]) => listRow(r, m)).join("")}</div>`
+      <div class="glass flush rows">${mine.map(([r, m]) => listRow(r, m, { sub: sinceLine(m, r.symbol) })).join("")}</div>`
     : `<div class="empty glass empty-big">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="${STAR_PATH}"/></svg>
         <strong>הרשימה ריקה</strong>
@@ -487,31 +585,160 @@ function renderWatch() {
         <button class="btn" data-action="search">חיפוש מניה</button></div>`}`;
 }
 
+function mean(a) { return a.length ? a.reduce((s, v) => s + v, 0) / a.length : null; }
+
+function progressBar(p, m) {
+  if (!isNum(p.target) || !isNum(p.stop) || !isNum(m.curPx)) {
+    return `<p class="note">ביום הכניסה המניה לא הייתה רעיון עם יעד וסטופ, ולכן נמדדת רק התשואה.</p>`;
+  }
+  const c = p.currency === "ILS" ? "₪" : "$";
+  const lo = p.stop, span = p.target - p.stop || 1;
+  const at = (v) => Math.min(100, Math.max(0, ((v - lo) / span) * 100));
+  const e = at(p.price), x = at(m.curPx);
+  const [a, b] = x >= e ? [e, x] : [x, e];
+  let status;
+  if (m.hitTarget) status = `<span class="pill up">הגיעה ליעד</span>`;
+  else if (m.hitStop) status = `<span class="pill down">נגעה בסטופ</span>`;
+  else if (isNum(m.progress) && m.progress >= 0) status = `עברה ${ltr(Math.round(m.progress * 100) + "%")} מהדרך ליעד`;
+  else status = `מתחת למחיר הכניסה · הסטופ ב-${fmtPct(m.stopPct, 1)}`;
+  return `<div class="track">
+    <div class="track-bar"><i class="fill ${x >= e ? "up" : "down"}" style="left:${a}%;width:${b - a}%"></i>
+      <i class="mark entry" style="left:${e}%"></i><i class="mark now ${tone(m.ret)}" style="left:${x}%"></i></div>
+    <div class="track-labels"><span>סטופ ${fmtPrice(p.stop, c)} ${fmtPct(m.stopPct, 1)}</span><span>יעד ${fmtPrice(p.target, c)} ${fmtPct(m.tgtPct, 1)}</span></div>
+    <div class="track-status">${status}</div>
+  </div>`;
+}
+
+function positionCard(p) {
+  const m = posMetrics(p); const c = p.currency === "ILS" ? "₪" : "$";
+  const bench = isNum(m.bench) ? ` · המדד באותה תקופה ${fmtPct(m.bench, 1)}` : "";
+  return `<article class="pos glass" data-action="detail" data-market="${p.market}" data-symbol="${esc(p.symbol)}" role="button" tabindex="0">
+    <div class="card-top">
+      <div class="ident"><div class="ticker ltr">${esc(p.symbol)}</div><div class="name">${esc(p.name)}</div></div>
+      ${sparkSvg(m.path, "spark card-spark")}
+      <div class="price"><div class="pos-ret ${tone(m.ret)}">${fmtPct(m.ret, 2)}</div><div class="muted small">${fmtPrice(m.curPx, c)}</div></div>
+    </div>
+    <div class="pos-meta">נכנסה ב-${fmtDate(p.since)} במחיר ${fmtPrice(p.price, c)} · ${m.days ? `לפני ${ltr(m.days)} ימים` : "היום"}${bench}</div>
+    ${progressBar(p, m)}
+  </article>`;
+}
+
+/* Shown inside the stock sheet. */
+function positionPanel(market, sym) {
+  const p = positions()[starKey(market, sym)];
+  if (!p) return `<p class="note">הקישו על הכוכב כדי לעקוב אחרי המניה במעקב וירטואלי, החל ממחיר הסגירה האחרון. הביצועים יופיעו בטאב "ביצועים".</p>`;
+  const m = posMetrics(p); const c = p.currency === "ILS" ? "₪" : "$";
+  return `<div class="sub-title">המעקב שלי</div>
+    <div class="glass pad pos-panel">
+      <div class="pos-line"><span>נכנסה ב-${fmtDate(p.since)} במחיר ${fmtPrice(p.price, c)}</span><b class="${tone(m.ret)}">${fmtPct(m.ret, 2)}</b></div>
+      ${progressBar(p, m)}
+    </div>`;
+}
+
+function returnBars(list) {
+  const scale = Math.max(0.02, ...list.map((x) => Math.abs(x.m.ret)), ...list.map((x) => Math.abs(x.m.tgtPct || 0))) * 1.1;
+  const w = (v) => (Math.abs(v) / scale) * 50;
+  return `<section class="glass pad">
+    <div class="panel-head"><h4>תשואה מול היעד</h4><span class="muted small">הקו הבהיר = היעד שהוגדר</span></div>
+    ${list.map(({ p, m }) => `<div class="rbar" data-action="detail" data-market="${p.market}" data-symbol="${esc(p.symbol)}">
+      <span class="rbar-sym ltr">${esc(p.symbol)}</span>
+      <div class="rbar-track"><i class="zero"></i>
+        <i class="rfill ${tone(m.ret)}" style="left:${m.ret >= 0 ? 50 : 50 - w(m.ret)}%;width:${w(m.ret)}%"></i>
+        ${isNum(m.tgtPct) ? `<i class="rtgt" style="left:${50 + (m.tgtPct / scale) * 50}%"></i>` : ""}</div>
+      <span class="rbar-val ${tone(m.ret)}">${fmtPct(m.ret, 1)}</span></div>`).join("")}
+  </section>`;
+}
+
+function myPortfolio() {
+  const list = Object.values(positions()).map((p) => ({ p, m: posMetrics(p) })).filter((x) => isNum(x.m.ret))
+    .sort((a, b) => b.m.ret - a.m.ret);
+  const closed = closedPositions();
+  const closedHtml = closed.length ? `${sectionTitle("מעקבים שהסתיימו")}<div class="glass flush rows">${closed.slice(0, 30).map((p) => {
+      const r = p.exitPrice / p.price - 1; const c = p.currency === "ILS" ? "₪" : "$";
+      return `<div class="row static"><div class="ident"><div class="ticker ltr">${esc(p.symbol)}</div>
+        <div class="name">${fmtDate(p.since)} עד ${fmtDate(p.exitDate)} · ${fmtPrice(p.price, c)} ← ${fmtPrice(p.exitPrice, c)}</div></div>
+        <div class="price"><div class="last ${tone(r)}">${fmtPct(r, 2)}</div></div></div>`;
+    }).join("")}</div>` : "";
+  if (!list.length) {
+    return `<div class="empty glass empty-big">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="${STAR_PATH}"/></svg>
+        <strong>התיק הווירטואלי ריק</strong>
+        <span>סמנו כוכב על מניה, והיא תיכנס לתיק במחיר הסגירה של אותו יום, יחד עם היעד והסטופ אם הייתה רעיון. כאן תראו כמה היא עלתה בפועל לעומת היעד.</span>
+        <button class="btn" data-action="search">בחירת מניה</button></div>${closedHtml}`;
+  }
+  const avg = mean(list.map((x) => x.m.ret));
+  const withB = list.filter((x) => isNum(x.m.bench));
+  const avgB = withB.length ? mean(withB.map((x) => x.m.bench)) : null;
+  const beat = withB.filter((x) => x.m.ret > x.m.bench).length;
+  const winners = list.filter((x) => x.m.ret > 0).length;
+  const ideas = list.filter((x) => isNum(x.m.tgtPct));
+  const hits = ideas.filter((x) => x.m.hitTarget).length, stops = ideas.filter((x) => x.m.hitStop).length;
+  const near = ideas.filter((x) => !x.m.hitTarget && isNum(x.m.progress) && x.m.progress >= 0.5).length;
+  const best = list[0], worst = list[list.length - 1];
+  const tile = (v, k) => `<div class="mini-stat"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+  const frac = (a, b) => (b ? ltr(`${a}/${b}`) : "—");
+  return `
+    <section class="glass hero perf-hero">
+      <div class="hero-name">תשואה ממוצעת <span>${ltr(list.length)} מניות במעקב · משקל שווה</span></div>
+      <div class="big ${tone(avg)}">${fmtPct(avg, 2)}</div>
+      <div class="hero-sub">${isNum(avgB) ? `<span class="muted">המדד באותן תקופות</span> ${changeHtml(avgB, 1)}<span class="dot-sep"></span>
+        <span class="${tone(avg - avgB)}">${avg - avgB >= 0 ? "מעל המדד" : "מתחת למדד"} ב-${fmtPct(Math.abs(avg - avgB), 1, false)}</span>`
+        : `<span class="muted">ההשוואה למדד תופיע כשיהיו נתוני היסטוריה</span>`}</div>
+      <div class="mini-stats perf-tiles">
+        ${tile(frac(winners, list.length), "ברווח")}
+        ${tile(frac(beat, withB.length), "עקפו את המדד")}
+        ${tile(frac(hits, ideas.length), "הגיעו ליעד")}
+        ${tile(frac(stops, ideas.length), "נגעו בסטופ")}
+      </div>
+    </section>
+    ${list.length > 1 ? `<div class="leaders">
+      <div class="glass leader" data-action="detail" data-market="${best.p.market}" data-symbol="${esc(best.p.symbol)}"><span class="k">המובילה</span>
+        <span class="ltr ticker">${esc(best.p.symbol)}</span><b class="${tone(best.m.ret)}">${fmtPct(best.m.ret, 1)}</b></div>
+      <div class="glass leader" data-action="detail" data-market="${worst.p.market}" data-symbol="${esc(worst.p.symbol)}"><span class="k">המפגרת</span>
+        <span class="ltr ticker">${esc(worst.p.symbol)}</span><b class="${tone(worst.m.ret)}">${fmtPct(worst.m.ret, 1)}</b></div>
+      <div class="glass leader"><span class="k">קרובות ליעד</span><span class="ticker">${ltr(near)}</span><b class="muted">עברו חצי מהדרך</b></div>
+    </div>` : ""}
+    ${returnBars(list)}
+    ${sectionTitle("המניות שבמעקב")}
+    <div class="grid">${list.map(({ p }) => positionCard(p)).join("")}</div>
+    ${closedHtml}
+    <p class="set-foot">מעקב וירטואלי בלבד, לפי מחירי סגירה יומיים. לא בוצעה שום קנייה. הנתונים נשמרים במכשיר הזה בלבד; הסרת הכוכב מסיימת את המעקב במחיר הסגירה האחרון.</p>`;
+}
+
+function algoRecord() {
+  const t = STATE.track; const sum = t?.summary?.all;
+  if (!sum) return `<div class="empty glass">התיעוד יתחיל להצטבר אחרי ההרצה הראשונה.</div>`;
+  const pct = (v) => (isNum(v) ? fmtPct(v, 1) : "—");
+  const stat = (v, k, cls = "") => `<div class="stat glass"><span class="v ${cls}">${v}</span><span class="k">${k}</span></div>`;
+  const goal = sum.min_completed_for_conclusion || 30;
+  const done = Math.min(sum.completed, goal);
+  return `
+    <p class="lead">כל רעיון של הסורק נבדק אוטומטית מול המחירים בפועל: כניסה עד 5 ימי מסחר, ואז יעד, סטופ או תום 20 ימים.</p>
+    <section class="glass pad">
+      <div class="panel-head"><h4>בדרך למסקנה</h4><span class="muted small">${ltr(`${sum.completed}/${goal}`)} רעיונות הסתיימו</span></div>
+      <div class="meter big-meter"><i style="width:${Math.round((done / goal) * 100)}%"></i></div>
+      <p class="note">${sum.too_few_to_conclude ? "עד 30 רעיונות שהסתיימו, התוצאות אקראיות במידה רבה ואין להסיק מהן." : "יש מספיק רעיונות כדי להתחיל להסיק מסקנות."}
+        ממתינים לכניסה: ${ltr(sum.pending)} · פתוחים: ${ltr(sum.open)} · לא הופעלו: ${ltr(sum.not_triggered)}</p>
+    </section>
+    <div class="stats">
+      ${stat(ltr(sum.completed), "הסתיימו")}
+      ${stat(isNum(sum.hit_rate) ? ltr(Math.round(sum.hit_rate * 100) + "%") : "—", "הגיעו ליעד")}
+      ${stat(isNum(sum.avg_r) ? ltr((sum.avg_r > 0 ? "+" : "") + sum.avg_r.toFixed(2) + "R") : "—", "ממוצע R", tone(sum.avg_r))}
+      ${stat(pct(sum.avg_pct), "תשואה ממוצעת", tone(sum.avg_pct))}
+      ${stat(pct(sum.avg_bench_pct_same_period), "המדד באותן תקופות", tone(sum.avg_bench_pct_same_period))}
+      ${stat(ltr(`${t.summary.us.completed} / ${t.summary.il.completed}`), "ארה״ב / ישראל")}
+    </div>
+    ${sectionTitle("רעיונות אחרונים")}
+    ${(t.evaluations || []).length ? `<div class="glass flush rows">${t.evaluations.slice(0, 40).map(evalRow).join("")}</div>`
+      : `<div class="empty glass">אין עדיין רעיונות שנבדקו. הבדיקה מתחילה ביום המסחר שאחרי כל רעיון.</div>`}`;
+}
+
 function renderPerf() {
   const el = $("#screen-perf");
-  const t = STATE.track; const sum = t?.summary?.all;
-  let body = `<div class="empty glass">התיעוד יתחיל להצטבר אחרי ההרצה הראשונה.</div>`;
-  if (sum) {
-    const pct = (v) => (isNum(v) ? fmtPct(v, 1) : "—");
-    const stat = (v, k, cls = "") => `<div class="stat glass"><span class="v ${cls}">${v}</span><span class="k">${k}</span></div>`;
-    body = `
-      ${sum.too_few_to_conclude ? `<div class="banner warn"><strong>מעט מדי רעיונות כדי להסיק מסקנות</strong>הסתיימו ${ltr(sum.completed)} רעיונות מתוך ${ltr(sum.min_completed_for_conclusion)} הדרושים לפחות. התוצאות עד כה הן אקראיות במידה רבה.</div>` : ""}
-      <div class="stats">
-        ${stat(ltr(sum.completed), "רעיונות שהסתיימו")}
-        ${stat(isNum(sum.hit_rate) ? ltr(Math.round(sum.hit_rate * 100) + "%") : "—", "הגיעו ליעד")}
-        ${stat(isNum(sum.avg_r) ? ltr((sum.avg_r > 0 ? "+" : "") + sum.avg_r.toFixed(2) + "R") : "—", "ממוצע R", tone(sum.avg_r))}
-        ${stat(pct(sum.avg_pct), "תשואה ממוצעת", tone(sum.avg_pct))}
-        ${stat(pct(sum.avg_bench_pct_same_period), "המדד באותן תקופות", tone(sum.avg_bench_pct_same_period))}
-        ${stat(ltr(sum.open), "פתוחים כעת")}
-      </div>
-      <div class="count">ממתינים לכניסה: ${ltr(sum.pending)} · לא הופעלו (לא נספרים): ${ltr(sum.not_triggered)} · הסתיימו בארה״ב: ${ltr(t.summary.us.completed)} · בישראל: ${ltr(t.summary.il.completed)}</div>
-      ${sectionTitle("רעיונות אחרונים")}
-      ${(t.evaluations || []).length ? `<div class="glass flush rows">${t.evaluations.slice(0, 40).map(evalRow).join("")}</div>`
-        : `<div class="empty glass">אין עדיין רעיונות שנבדקו. הבדיקה מתחילה ביום המסחר שאחרי כל רעיון.</div>`}`;
-  }
-  el.innerHTML = `<div class="screen-head"><h2 class="large-title">ביצועים</h2></div>
-    <p class="lead">כל רעיון נבדק אוטומטית מול המחירים בפועל: כניסה עד 5 ימי מסחר, ואז יעד, סטופ או תום 20 ימים.</p>
-    ${body}`;
+  if (!STATE.loaded) { el.innerHTML = skeleton(); return; }
+  el.innerHTML = `<div class="screen-head"><h2 class="large-title">ביצועים</h2>
+      ${segmented("perf", [["mine", "התיק שלי"], ["algo", "הסורק"]], STATE.perfTab)}</div>
+    ${STATE.perfTab === "algo" ? algoRecord() : myPortfolio()}`;
 }
 
 function evalRow(e) {
@@ -545,8 +772,8 @@ function renderSettings() {
     </div>
     <p class="set-foot">מצב "המסחר פתוח/סגור" מחושב לפי שעות המסחר הרגילות ואינו מכיר חגים. שווי שוק, מכפיל רווח וחדשות עדיין לא נכללים בגרסה הזו.</p>
     <div class="set-title">הרשימה שלי</div>
-    <div class="glass set-group"><div class="set-row"><span>${ltr(n)} מניות מסומנות · נשמרות במכשיר הזה בלבד</span>
-      ${n ? `<button class="btn danger small" data-action="clear-stars">ניקוי</button>` : ""}</div></div>
+    <div class="glass set-group"><div class="set-row"><span>${ltr(n)} מניות במעקב · ${ltr(closedPositions().length)} מעקבים שהסתיימו · נשמרים במכשיר הזה בלבד</span>
+      ${n || closedPositions().length ? `<button class="btn danger small" data-action="clear-stars">ניקוי</button>` : ""}</div></div>
     <div class="set-title">אודות</div>
     <div class="glass set-group">${row("גרסה", ltr("3.0"))}${row("קוד", ltr("github.com/Amibar20/stock-radar"))}</div>`;
 }
@@ -571,12 +798,12 @@ function openDetail(market, symbol) {
   const same = STATE.detail && STATE.detail.market === market && STATE.detail.symbol === symbol;
   const scroll = $("#sheet").scrollTop;
   STATE.detail = { market, symbol };
-  const i = row.indicators || {}; const c = cur(row); const ai = row.ai || {};
+  const i = row.indicators || {}; const c = cur(row); const ai = row.ai || {}; const f = row.fundamentals || {};
   const tr = (k, v, cls = "") => `<div class="kv-row"><span>${k}</span><span class="${cls}">${v}</span></div>`;
   const series = histSeries(market, symbol);
   let chart = "";
   if (series) {
-    chart = chartHtml(sliceRange(series, STATE.detailRange), c, 200) + segmented("drange", RANGES.map((r) => [r[0], r[1]]), STATE.detailRange, "full");
+    chart = chartHtml(sliceRange(series, STATE.detailRange), c, 200) + rangeTabs(series, "drange", STATE.detailRange);
   } else if (Array.isArray(row.sparkline) && row.sparkline.length > 1) {
     chart = chartHtml({ values: row.sparkline, dates: null }, c, 170) + `<p class="note">30 ימי המסחר האחרונים</p>`;
   }
@@ -608,10 +835,15 @@ function openDetail(market, symbol) {
       ${stat("מחזור היום", fmtCompact(i.volume))}
       ${stat("מחזור ממוצע 20 יום", fmtCompact(i.avg_volume20))}
       ${stat("מחזור כספי יומי", fmtCompact(i.avg_dollar_volume20, c))}
+      ${stat("מכפיל רווח (P/E)", isNum(f.pe) ? ltr(fmtNum(f.pe, 1)) : f.eps_negative ? "הפסד" : "—")}
+      ${market === "us" ? stat("P/E עתידי", isNum(f.fpe) ? ltr(fmtNum(f.fpe, 1)) : "—") : ""}
+      ${stat("שווי שוק", fmtCompact(f.mcap, c))}
       ${stat("RSI 14", ltr(fmtNum(i.rsi14, 0)))}
-      ${stat("תשואה 3 חודשים", fmtPct(i.ret_63d), tone(i.ret_63d))}
+      ${series ? "" : stat("תשואה 3 חודשים", fmtPct(i.ret_63d), tone(i.ret_63d))}
       ${stat(market === "us" ? "ענף" : "מדד", `<span class="${market === "us" ? "ltr" : ""}">${esc(sector)}</span>`)}
     </div>
+    ${f.date ? `<p class="note">מכפיל רווח: מחיר הסגירה חלקי הרווח למניה ב-12 החודשים האחרונים (Yahoo). "הפסד" = רווח שלילי, אין מכפיל.</p>` : ""}
+    ${positionPanel(market, row.symbol)}
     ${row.levels ? `<div class="sub-title">רמות לרעיון</div>${levelsBlock(row)}
       <p class="note">סיכון עד הסטופ ${fmtPct(row.levels.risk_pct, 1, false)} · יחס סיכוי/סיכון ${ltr("1:" + row.levels.reward_risk)}</p>` : levelsBlock(row)}
     ${ai.available ? `
@@ -698,7 +930,7 @@ function show(screen) {
 }
 
 function refreshAfterStar() {
-  renderMarkets(); renderWatch(); renderSettings();
+  renderMarkets(); renderWatch(); renderPerf(); renderSettings();
   if (STATE.sheet === "detail" && STATE.detail) openDetail(STATE.detail.market, STATE.detail.symbol);
   if (STATE.sheet === "search") renderSearch();
 }
@@ -709,6 +941,7 @@ function onSeg(name, val) {
   else if (name === "drange") { STATE.detailRange = val; store.set("range", val); if (STATE.detail) openDetail(STATE.detail.market, STATE.detail.symbol); }
   else if (name === "movers") { STATE.movers = val; renderMarkets(); }
   else if (name === "filter") { STATE.filter = val; renderMarkets(); }
+  else if (name === "perf") { STATE.perfTab = val; renderPerf(); }
   else if (name === "theme") { store.set("theme", val); applyTheme(val); renderSettings(); }
 }
 
@@ -742,7 +975,9 @@ document.addEventListener("click", (ev) => {
   if (act === "search") return openSearch();
   if (act === "close") return closeSheet();
   if (act === "clear-stars") {
-    if (confirm("לנקות את כל המניות מהרשימה שלי?")) { store.set("starred", []); refreshAfterStar(); }
+    if (confirm("לנקות את הרשימה ואת התיק הווירטואלי, כולל המעקבים שהסתיימו?")) {
+      store.set("starred", []); store.set("positions", {}); store.set("closed", []); refreshAfterStar();
+    }
   }
 });
 document.addEventListener("keydown", (ev) => {
@@ -786,6 +1021,7 @@ async function init() {
   renderAll();
   const [us, il, status, track] = await Promise.all(["us", "il", "status", "track_record"].map(loadJSON));
   Object.assign(STATE, { us, il, status, track, loaded: true });
+  syncPositions();
   renderAll();
   // One year of daily closes for the charts: larger files, loaded after the first paint.
   const [hu, hi] = await Promise.all([loadJSON("us_history"), loadJSON("il_history")]);
