@@ -98,10 +98,13 @@ def read_json(path: Path, default: Any = None) -> Any:
         return json.load(f)
 
 
-def write_json(path: Path, data: Any) -> None:
+def write_json(path: Path, data: Any, compact: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        if compact:  # large machine-read files (chart history): no indentation
+            json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
+        else:
+            json.dump(data, f, ensure_ascii=False, indent=2)
         f.write("\n")
     tmp.replace(path)

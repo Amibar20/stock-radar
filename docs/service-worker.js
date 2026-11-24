@@ -1,6 +1,6 @@
 /* Offline support. Everything is network-first, so a new deploy is picked up on the next open; when the
    network is unavailable the last cached copy is served (app shell and data/*.json alike). */
-const VERSION = "stock-radar-v2";
+const VERSION = "stock-radar-v3";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "manifest.webmanifest",
   "icons/apple-touch-icon.png", "icons/icon-192.png", "icons/icon-512.png", "icons/favicon.png"];
 

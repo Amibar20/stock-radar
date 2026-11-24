@@ -110,6 +110,10 @@ All paths are relative, so the site works at `https://<user>.github.io/stock-rad
   a new final daily bar (holidays exit here), the scan, AI, track record, a bot commit of `docs/data` with
   `[skip ci]`, and a Pages deployment (only when new data was pushed; retried once, since Pages fails briefly now and
   then). A concurrency group stops runs from overlapping.
+- Each scan also writes `docs/data/{us,il}_history.json`: one year of daily closes on a shared date axis for every
+  stock plus the benchmark and display indices, used by the app's charts (loaded after the first paint). Display
+  indices (`DISPLAY_INDICES` in `scanner/run.py`: DIA and IWM for the US, TA35.TA for Israel) appear under
+  `indices` and are never used for the market regime, relative strength or the track record.
 - `pages.yml` redeploys the site when `docs/` changes in a push.
 - The site is deployed with GitHub Actions (Pages source "GitHub Actions"), not "deploy from branch": bot commits
   carry `[skip ci]`, which also suppresses the branch-based Pages build.

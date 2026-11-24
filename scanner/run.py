@@ -35,6 +35,11 @@ log = logging.getLogger("scanner.run")
 
 MAX_FAILURE_RATIO = 0.30
 SPARKLINE_BARS = 30
+HISTORY_BARS = 253  # one year of daily closes (+1 so a 1-year change has a start point) for the app's charts
+# Display-only indices for the app. They are NOT benchmarks: the market regime, relative strength, the AI brief
+# and the track record keep using the benchmarks only. US ones are ETFs (1 Twelve Data credit each) and are
+# fetched after the stocks, so a tight credit budget never costs a stock.
+DISPLAY_INDICES = {"us": ["DIA", "IWM"], "il": ["TA35.TA"]}
 FINAL_BAR_BUFFER_MIN = 45  # minutes after the close before today's bar is treated as final
 
 
@@ -116,7 +121,8 @@ def scan(market: str, limit: int | None, now_utc: dt.datetime, previous: dict | 
     stocks, benchmarks, currency = _universe(market, limit, watchlist)
     stocks = _apply_limit(stocks, limit, watchlist)
 
-    res = fetch(market, benchmarks + [s["fetch"] for s in stocks])
+    extras = DISPLAY_INDICES[market]
+    res = fetch(market, benchmarks + [s["fetch"] for s in stocks] + extras)
     bars = {k: drop_partial_bar(v, cal, now_utc) for k, v in res.bars.items()}
     if as_of_override:  # testing only: pretend the scan ran on an earlier date
         cutoff = pd.Timestamp(as_of_override)
@@ -124,6 +130,7 @@ def scan(market: str, limit: int | None, now_utc: dt.datetime, previous: dict | 
 
     bench_close = bars[benchmarks[0]]["close"] if benchmarks[0] in bars else None
     bench_snap = {b: market_snapshot(bars[b]) for b in benchmarks if b in bars and len(bars[b]) >= 200}
+    index_snap = {b: market_snapshot(bars[b]) for b in extras if b in bars and len(bars[b]) >= 200}
 
     prev_by_symbol = {s["symbol"]: s for s in (previous or {}).get("stocks", [])}
     rows: list[dict] = []
@@ -181,6 +188,7 @@ def scan(market: str, limit: int | None, now_utc: dt.datetime, previous: dict | 
         "generated_at": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "as_of": as_of,
         "benchmarks": bench_snap,
+        "indices": index_snap,
         "stats": {
             "universe": len(stocks),
             "fetched": fetched,
@@ -194,6 +202,35 @@ def scan(market: str, limit: int | None, now_utc: dt.datetime, previous: dict | 
         "stocks": sorted(rows, key=lambda r: (r.get("rank") or 10_000, r["symbol"])),
     }
     return result, bars, bench_close
+
+
+def _close(v: float) -> float:
+    return round(float(v), 2 if abs(v) >= 1 else 4)
+
+
+def build_history(result: dict, bars: dict[str, pd.DataFrame]) -> dict | None:
+    """One year of daily closes on a shared date axis (the first benchmark's), for the app's charts.
+
+    Keys are stock symbols as shown in the app plus the benchmark/index keys; missing days are null.
+    """
+    keys = list(result["benchmarks"]) + list(result.get("indices") or {})
+    axis_df = next((bars[k] for k in keys if k in bars and not bars[k].empty), None)
+    if axis_df is None:
+        return None
+    axis = axis_df.index[-HISTORY_BARS:]
+    series = {k: k for k in keys}
+    for r in result["stocks"]:
+        if r.get("indicators") and not r.get("stale_since"):
+            series[r["symbol"]] = r.get("fetch", r["symbol"])
+    closes = {}
+    for key, fetch_key in series.items():
+        df = bars.get(fetch_key)
+        if df is None or df.empty:
+            continue
+        s = df["close"].reindex(axis)
+        closes[key] = [None if pd.isna(v) else _close(v) for v in s]
+    return {"market": result["market"], "as_of": result["as_of"], "generated_at": result["generated_at"],
+            "dates": [d.date().isoformat() for d in axis], "closes": closes}
 
 
 def _ident(s: dict) -> dict:
@@ -366,6 +403,9 @@ def main(argv: list[str] | None = None) -> int:
     s_all = track["summary"][args.market]
     log.info("Track record %s: %d ideas, %d completed, avg R %s", args.market, s_all["ideas"], s_all["completed"],
              s_all["avg_r"])
+    hist = build_history(result, bars)
+    if hist:
+        write_json(out_dir / f"{args.market}_history.json", hist, compact=True)
     write_json(out_file, result)
     status[args.market] = {"ok": True, "checked_at": result["generated_at"], "as_of": result["as_of"]}
     write_json(status_file, status)
